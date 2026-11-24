@@ -1,0 +1,402 @@
+diff -ruN a/native-android/app/src/main/java/dev/ravenfield/nativehost/LauncherScreen.java b/native-android/app/src/main/java/dev/ravenfield/nativehost/LauncherScreen.java
+--- a/native-android/app/src/main/java/dev/ravenfield/nativehost/LauncherScreen.java	2026-11-24 09:45:05.590109856 +0000
++++ b/native-android/app/src/main/java/dev/ravenfield/nativehost/LauncherScreen.java	2026-11-24 09:45:05.621972560 +0000
+@@ -14,7 +14,7 @@
+     private TextView label(String text,float size,int color){TextView v=new TextView(activity);v.setText(text);v.setTextSize(size);v.setTextColor(color);return v;}
+     private GradientDrawable panel(int color,int stroke){GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(16));if(stroke!=0)d.setStroke(dp(1),stroke);return d;}
+     private Button button(String text,int color,Runnable click){Button b=new Button(activity);b.setText(text);b.setTextColor(0xfff0f5fc);b.setTextSize(15);b.setAllCaps(false);b.setMinHeight(dp(50));b.setPadding(dp(16),dp(8),dp(16),dp(8));b.setBackground(panel(color,0x445c87b0));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.topMargin=dp(10);b.setLayoutParams(p);b.setOnClickListener(v->click.run());return b;}
+-    LauncherScreen(Activity activity,Runnable launch,Runnable select,Runnable importInstalled,Runnable copy,Runnable smallTest,Runnable unityTest,Runnable graphicsTest){
++    LauncherScreen(Activity activity,Runnable launch,Runnable select,Runnable importInstalled,Runnable copy,Runnable smallTest,Runnable unityTest,Runnable graphicsTest,Runnable importMod){
+         this.activity=activity;
+         LinearLayout root=new LinearLayout(activity);root.setOrientation(LinearLayout.VERTICAL);root.setBackgroundColor(0xff0c0f13);activity.setContentView(root);
+         if(android.os.Build.VERSION.SDK_INT>=30){root.setOnApplyWindowInsetsListener((view,insets)->{android.graphics.Insets bars=insets.getInsets(WindowInsets.Type.systemBars()|WindowInsets.Type.displayCutout());view.setPadding(bars.left,bars.top,bars.right,bars.bottom);return WindowInsets.CONSUMED;});root.requestApplyInsets();}else root.setFitsSystemWindows(true);
+@@ -34,6 +34,7 @@
+         choose=button(activity.getString(BuildConfig.BUNDLED_GAME_DATA?R.string.ui_prepare_game_files:R.string.ui_choose_file_3fc11),0xff252d39,select);files.addView(choose);
+         installed=button(activity.getString(R.string.ui_import_from_installed_prototype_ab243),0xff191f28,importInstalled);files.addView(installed);
+         if(BuildConfig.BUNDLED_GAME_DATA)installed.setVisibility(View.GONE);
++        files.addView(button(activity.getString(R.string.ui_import_mod),0xff252d39,importMod));
+         LinearLayout settings=card(column);settings.addView(label(activity.getString(R.string.ui_make_it_yours_dc271),20,0xfff1f3f7));
+         settings.addView(button(activity.getString(R.string.ui_render_resolution),0xff252d39,()->RenderSettings.show(activity)));
+         settings.addView(button(activity.getString(R.string.ui_hardware_help_title),0xff252d39,()->new AlertDialog.Builder(activity).setTitle(R.string.ui_hardware_help_title).setMessage(R.string.ui_hardware_help).setPositiveButton(android.R.string.ok,null).show()));
+diff -ruN a/native-android/app/src/main/java/dev/ravenfield/nativehost/MainActivity.java b/native-android/app/src/main/java/dev/ravenfield/nativehost/MainActivity.java
+--- a/native-android/app/src/main/java/dev/ravenfield/nativehost/MainActivity.java	2026-11-24 09:45:05.585011599 +0000
++++ b/native-android/app/src/main/java/dev/ravenfield/nativehost/MainActivity.java	2026-11-24 09:45:05.622394365 +0000
+@@ -101,7 +101,7 @@
+             ()->{if(!busy){if(BuildConfig.BUNDLED_GAME_DATA){bundledPreparationStarted=false;prepareBundledGame();}else{Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);intent.setType("*/*");intent.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(intent,1);}}},
+             ()->{try{String path=getPackageManager().getApplicationInfo("dev.ravenfield.port",0).publicSourceDir;beginImport(()->new FileInputStream(path));}catch(PackageManager.NameNotFoundException|SecurityException error){new android.app.AlertDialog.Builder(this).setTitle(MainActivity.this.getString(R.string.ui_select_game_file_41364)).setMessage(MainActivity.this.getString(R.string.ui_the_prototype_is_not_installed_select_your_d8ce4)).setPositiveButton(MainActivity.this.getString(R.string.ui_ok_2dfaa),null).show();}},
+             ()->((ClipboardManager)getSystemService(CLIPBOARD_SERVICE)).setPrimaryClip(ClipData.newPlainText(MainActivity.this.getString(R.string.ui_ravendroid_b77d3),report)),
+-            ()->startTest(true),()->startTest(false),()->startTest(false,true));
++            ()->startTest(true),()->startTest(false),()->startTest(false,true),this::chooseMod);
+         output=launcher.output;frame=launcher.frame;live=launcher.play;choose=launcher.choose;installed=launcher.installed;smoke=launcher.smoke;unity=launcher.unity;graphics=launcher.graphics;
+     }
+     private void setBusy(boolean value){
+@@ -155,6 +155,33 @@
+         if(request==1&&result==RESULT_OK&&data!=null&&data.getData()!=null){
+             Uri uri=data.getData();beginImport(()->getContentResolver().openInputStream(uri));
+         }
++        if(request==2&&result==RESULT_OK&&data!=null&&data.getData()!=null)importMod(data.getData());
++    }
++    private File savesFile(){return new File(getFilesDir(),"native-saves.bin");}
++    private void chooseMod(){
++        if(busy||!runtimeLoaded||isNativeBusy())return;
++        Intent intent=new Intent(Intent.ACTION_OPEN_DOCUMENT);intent.setType("application/zip");intent.addCategory(Intent.CATEGORY_OPENABLE);
++        startActivityForResult(intent,2);
++    }
++    /** Copies a mod ZIP into the game save snapshot. Runs only while no native session is active. */
++    private void importMod(Uri uri){
++        if(busy||isNativeBusy())return;
++        setBusy(true);setReport(getString(R.string.ui_importing_mod));
++        new Thread(()->{
++            String answer;
++            try{
++                String name=uri.getLastPathSegment();if(name==null)name="Mod";
++                name=name.substring(name.lastIndexOf('/')+1);if(name.toLowerCase(java.util.Locale.ROOT).endsWith(".zip"))name=name.substring(0,name.length()-4);
++                name=name.replaceAll("[^A-Za-z0-9._ -]","_");if(name.isEmpty()||name.equals(".")||name.equals(".."))name="Mod";
++                try(InputStream input=getContentResolver().openInputStream(uri)){
++                    if(input==null)throw new IOException("Could not open the selected file");
++                    ModImporter.Result done=ModImporter.importZip(input,savesFile(),name);
++                    answer=getString(R.string.ui_mod_imported,done.modName,done.files,done.bytes/1024)+"\n"+done.modsRoot;
++                }
++            }catch(Exception error){answer=getString(R.string.ui_mod_import_failed,String.valueOf(error.getMessage()));}
++            final String result=answer;sessionPreferences().edit().putString("lastReport",result).commit();
++            runOnUiThread(()->{if(isDestroyed())return;setReport(result);setBusy(false);});
++        },"RavenModImport").start();
+     }
+     private GameDataImporter.Profile dataProfile()throws Exception{
+         JSONObject profile;
+diff -ruN a/native-android/app/src/main/java/dev/ravenfield/nativehost/ModImporter.java b/native-android/app/src/main/java/dev/ravenfield/nativehost/ModImporter.java
+--- a/native-android/app/src/main/java/dev/ravenfield/nativehost/ModImporter.java	1970-01-01 00:00:00.000000000 +0000
++++ b/native-android/app/src/main/java/dev/ravenfield/nativehost/ModImporter.java	2026-11-24 09:45:05.602094688 +0000
+@@ -0,0 +1,257 @@
++package dev.ravenfield.nativehost;
++
++import java.io.ByteArrayOutputStream;
++import java.io.File;
++import java.io.FileInputStream;
++import java.io.FileOutputStream;
++import java.io.IOException;
++import java.io.InputStream;
++import java.nio.ByteBuffer;
++import java.nio.ByteOrder;
++import java.nio.charset.StandardCharsets;
++import java.nio.file.Files;
++import java.nio.file.StandardCopyOption;
++import java.security.MessageDigest;
++import java.security.NoSuchAlgorithmException;
++import java.util.ArrayList;
++import java.util.Arrays;
++import java.util.List;
++import java.util.Map;
++import java.util.TreeMap;
++import java.util.zip.ZipEntry;
++import java.util.zip.ZipInputStream;
++
++/**
++ * Copies a mod ZIP into the game's /idbfs save snapshot (native-saves.bin, format RAVSAVE1).
++ * Limits and validation mirror native-runtime/src/saves.rs; the file is replaced atomically and
++ * only when the whole import fits. Must not run while a native session is active.
++ */
++final class ModImporter {
++    static final int MAX_FILE = 8 * 1024 * 1024, MAX_TOTAL = 32 * 1024 * 1024, MAX_NODES = 1024, MAX_INDEX = 1024 * 1024;
++    private static final byte[] MAGIC = "RAVSAVE1".getBytes(StandardCharsets.US_ASCII);
++    private static final String ROOT = "/idbfs";
++    private static final int MAX_ZIP_ENTRIES = 4000;
++
++    static final class Entry {
++        final boolean directory; final byte[] data;
++        Entry(boolean directory, byte[] data) { this.directory = directory; this.data = data; }
++    }
++    static final class Result {
++        final String modsRoot, modName; final int files; final long bytes;
++        Result(String modsRoot, String modName, int files, long bytes) { this.modsRoot = modsRoot; this.modName = modName; this.files = files; this.bytes = bytes; }
++    }
++    private ModImporter() {}
++
++    /** Loads the snapshot; a missing file yields just the root directory, like the Rust store. */
++    static TreeMap<String, Entry> load(File snapshot) throws IOException {
++        TreeMap<String, Entry> entries = new TreeMap<>();
++        if (!snapshot.exists()) { entries.put(ROOT, new Entry(true, new byte[0])); return entries; }
++        long length = snapshot.length();
++        if (length < 44 || length > (long) MAX_TOTAL + MAX_INDEX + 44) throw new IOException("Invalid save snapshot size");
++        byte[] all = new byte[(int) length];
++        try (InputStream in = new FileInputStream(snapshot)) { readFully(in, all); }
++        if (!Arrays.equals(Arrays.copyOf(all, 8), MAGIC)) throw new IOException("Invalid save snapshot magic");
++        long indexSize = ByteBuffer.wrap(all, 8, 4).order(ByteOrder.LITTLE_ENDIAN).getInt() & 0xffffffffL;
++        if (indexSize > MAX_INDEX || indexSize + 44 > length) throw new IOException("Invalid save index size");
++        String index = new String(all, 12, (int) indexSize, StandardCharsets.UTF_8);
++        List<Object[]> meta = parseIndex(index);
++        if (meta.isEmpty() || meta.size() > MAX_NODES) throw new IOException("Invalid save node count");
++        long total = 0; int pos = 12 + (int) indexSize;
++        for (Object[] m : meta) {
++            String path = (String) m[0]; boolean dir = (Boolean) m[1]; long bytes = (Long) m[2];
++            if (!validPath(path) || bytes > MAX_FILE || (dir && bytes != 0)) throw new IOException("Invalid save entry");
++            total += bytes; if (total > MAX_TOTAL) throw new IOException("Save quota exceeded");
++            if (pos + bytes > all.length - 32) throw new IOException("Save payload length mismatch");
++            if (entries.put(path, new Entry(dir, Arrays.copyOfRange(all, pos, pos + (int) bytes))) != null) throw new IOException("Duplicate save path");
++            pos += (int) bytes;
++        }
++        if (length != 12 + indexSize + total + 32) throw new IOException("Save payload length mismatch");
++        MessageDigest sha = sha256(); sha.update(all, 0, all.length - 32);
++        if (!Arrays.equals(sha.digest(), Arrays.copyOfRange(all, all.length - 32, all.length))) throw new IOException("Save snapshot checksum mismatch");
++        Entry root = entries.get(ROOT);
++        if (root == null || !root.directory) throw new IOException("Save root is missing");
++        for (String path : entries.keySet()) {
++            if (path.equals(ROOT)) continue;
++            Entry parent = entries.get(path.substring(0, path.lastIndexOf('/')));
++            if (parent == null || !parent.directory) throw new IOException("Invalid save parent");
++        }
++        return entries;
++    }
++
++    /** Writes the snapshot through a temporary file and an atomic rename. */
++    static void save(File snapshot, TreeMap<String, Entry> entries) throws IOException {
++        long total = 0;
++        for (Entry e : entries.values()) total += e.data.length;
++        if (entries.size() > MAX_NODES || total > MAX_TOTAL) throw new IOException("Save quota exceeded");
++        StringBuilder json = new StringBuilder("[");
++        boolean first = true;
++        for (Map.Entry<String, Entry> e : entries.entrySet()) {
++            if (!first) json.append(','); first = false;
++            json.append("{\"path\":\"").append(e.getKey()).append("\",\"directory\":").append(e.getValue().directory).append(",\"bytes\":").append(e.getValue().data.length).append('}');
++        }
++        byte[] index = json.append(']').toString().getBytes(StandardCharsets.UTF_8);
++        if (index.length > MAX_INDEX) throw new IOException("Save index exceeds quota");
++        ByteArrayOutputStream body = new ByteArrayOutputStream((int) total + index.length + 44);
++        body.write(MAGIC);
++        body.write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(index.length).array());
++        body.write(index);
++        for (Entry e : entries.values()) body.write(e.data);
++        byte[] payload = body.toByteArray();
++        File temporary = new File(snapshot.getPath() + ".mods.partial");
++        try {
++            try (FileOutputStream out = new FileOutputStream(temporary)) {
++                out.write(payload); out.write(sha256().digest(payload)); out.getFD().sync();
++            }
++            Files.move(temporary.toPath(), snapshot.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
++        } finally { if (temporary.exists() && !temporary.delete()) temporary.deleteOnExit(); }
++    }
++
++    /**
++     * Finds where the game keeps mods without guessing: an existing "Mods" directory (shortest path
++     * wins), else "Mods" beside an existing "SaveData" directory. Throws if the game has not created
++     * its save folders yet (launch the game once first).
++     */
++    static String findModsRoot(Map<String, Entry> entries) throws IOException {
++        String best = null;
++        for (Map.Entry<String, Entry> e : entries.entrySet())
++            if (e.getValue().directory && e.getKey().endsWith("/Mods") && (best == null || e.getKey().length() < best.length())) best = e.getKey();
++        if (best != null) return best;
++        for (Map.Entry<String, Entry> e : entries.entrySet())
++            if (e.getValue().directory && e.getKey().endsWith("/SaveData") && (best == null || e.getKey().length() < best.length())) best = e.getKey();
++        if (best != null) return best + "/Mods";
++        throw new IOException("The game has not created its save folders yet. Launch the game once, return to the launcher and try again.");
++    }
++
++    /** Imports a mod ZIP. A single top-level folder keeps its name; otherwise fallbackName is used. */
++    static Result importZip(InputStream zip, File snapshot, String fallbackName) throws IOException {
++        TreeMap<String, Entry> entries = load(snapshot);
++        String modsRoot = findModsRoot(entries);
++        List<String> names = new ArrayList<>(); List<byte[]> blobs = new ArrayList<>();
++        long inTotal = 0;
++        try (ZipInputStream in = new ZipInputStream(zip)) {
++            ZipEntry ze; int count = 0;
++            while ((ze = in.getNextEntry()) != null) {
++                if (++count > MAX_ZIP_ENTRIES) throw new IOException("Mod ZIP has too many entries");
++                String name = ze.getName();
++                if (ze.isDirectory()) { cleanName(name.endsWith("/") ? name.substring(0, name.length() - 1) : name); continue; }
++                String clean = cleanName(name);
++                byte[] data = readBounded(in, MAX_FILE, clean);
++                inTotal += data.length; if (inTotal > MAX_TOTAL) throw new IOException("Mod is larger than the 32 MiB save quota");
++                names.add(clean); blobs.add(data);
++            }
++        }
++        if (names.isEmpty()) throw new IOException("The ZIP contains no files");
++        String top = names.get(0).contains("/") ? names.get(0).substring(0, names.get(0).indexOf('/')) : null;
++        for (String n : names) if (top != null && !n.startsWith(top + "/")) top = null;
++        String modName = top != null ? top : cleanName(fallbackName);
++        if (modName.contains("/")) throw new IOException("Invalid mod name");
++        String modRoot = modsRoot + "/" + modName;
++        // Replace any earlier copy of this mod, then add the new tree.
++        removeTree(entries, modRoot);
++        ensureDirs(entries, modRoot);
++        long bytes = 0;
++        for (int i = 0; i < names.size(); i++) {
++            String rel = top != null ? names.get(i).substring(top.length() + 1) : names.get(i);
++            String path = modRoot + "/" + rel;
++            if (!validPath(path)) throw new IOException("Unsafe path in ZIP: " + names.get(i));
++            ensureDirs(entries, path.substring(0, path.lastIndexOf('/')));
++            Entry old = entries.get(path);
++            if (old != null) throw new IOException("Duplicate or conflicting path in ZIP: " + names.get(i));
++            entries.put(path, new Entry(false, blobs.get(i))); bytes += blobs.get(i).length;
++        }
++        save(snapshot, entries);   // validates node/size quotas before replacing the old file
++        return new Result(modsRoot, modName, names.size(), bytes);
++    }
++
++    /** Names of installed mod folders (direct children of the Mods directory). */
++    static List<String> listMods(File snapshot) throws IOException {
++        TreeMap<String, Entry> entries = load(snapshot);
++        String root; try { root = findModsRoot(entries); } catch (IOException none) { return new ArrayList<>(); }
++        List<String> result = new ArrayList<>();
++        for (Map.Entry<String, Entry> e : entries.entrySet())
++            if (e.getValue().directory && e.getKey().startsWith(root + "/") && e.getKey().indexOf('/', root.length() + 1) < 0) result.add(e.getKey().substring(root.length() + 1));
++        return result;
++    }
++
++    static boolean removeMod(File snapshot, String modName) throws IOException {
++        if (modName.isEmpty() || modName.contains("/")) throw new IOException("Invalid mod name");
++        TreeMap<String, Entry> entries = load(snapshot);
++        String path = findModsRoot(entries) + "/" + modName;
++        if (!entries.containsKey(path)) return false;
++        removeTree(entries, path); save(snapshot, entries); return true;
++    }
++
++    private static void removeTree(TreeMap<String, Entry> entries, String root) {
++        entries.keySet().removeIf(p -> p.equals(root) || p.startsWith(root + "/"));
++    }
++    private static void ensureDirs(TreeMap<String, Entry> entries, String dir) throws IOException {
++        StringBuilder path = new StringBuilder();
++        for (String part : dir.substring(1).split("/")) {
++            path.append('/').append(part);
++            Entry e = entries.get(path.toString());
++            if (e == null) entries.put(path.toString(), new Entry(true, new byte[0]));
++            else if (!e.directory) throw new IOException("A file blocks the folder " + path);
++        }
++    }
++    /** Rejects anything the Rust store would reject, plus quotes and control characters. */
++    private static String cleanName(String name) throws IOException {
++        if (name.isEmpty() || name.length() > 512 || name.startsWith("/") || name.contains("\\") || name.contains("\0"))
++            throw new IOException("Unsafe path in ZIP: " + name);
++        for (int i = 0; i < name.length(); i++) { char c = name.charAt(i); if (c < 0x20 || c == 0x7f || c == '"') throw new IOException("Unsafe path in ZIP: " + name); }
++        for (String part : name.split("/", -1)) if (part.isEmpty() || part.equals(".") || part.equals("..")) throw new IOException("Unsafe path in ZIP: " + name);
++        return name;
++    }
++    private static boolean validPath(String path) {
++        if (!(path.equals(ROOT) || path.startsWith(ROOT + "/")) || path.length() > 4096 || path.contains("\\") || path.contains("\0")) return false;
++        for (String part : path.substring(1).split("/", -1)) if (part.isEmpty() || part.equals(".") || part.equals("..")) return false;
++        return true;
++    }
++    private static byte[] readBounded(InputStream in, int limit, String name) throws IOException {
++        ByteArrayOutputStream out = new ByteArrayOutputStream(); byte[] buffer = new byte[65536]; int n;
++        while ((n = in.read(buffer)) != -1) { if (out.size() + n > limit) throw new IOException(name + " is larger than the 8 MiB per-file save limit"); out.write(buffer, 0, n); }
++        return out.toByteArray();
++    }
++    private static void readFully(InputStream in, byte[] target) throws IOException {
++        int off = 0; while (off < target.length) { int n = in.read(target, off, target.length - off); if (n < 0) throw new IOException("Truncated save snapshot"); off += n; }
++    }
++    private static MessageDigest sha256() { try { return MessageDigest.getInstance("SHA-256"); } catch (NoSuchAlgorithmException e) { throw new AssertionError(e); } }
++
++    /** Strict reader for the flat index the Rust side writes: [{"path":s,"directory":b,"bytes":n},...]. */
++    private static List<Object[]> parseIndex(String s) throws IOException {
++        List<Object[]> out = new ArrayList<>(); int[] p = {0};
++        ws(s, p); expect(s, p, '['); ws(s, p);
++        if (peek(s, p) == ']') { p[0]++; return out; }
++        while (true) {
++            ws(s, p); expect(s, p, '{'); String path = null; Boolean dir = null; Long bytes = null;
++            while (true) {
++                ws(s, p); String key = str(s, p); ws(s, p); expect(s, p, ':'); ws(s, p);
++                if (key.equals("path")) path = str(s, p);
++                else if (key.equals("directory")) { if (s.startsWith("true", p[0])) { dir = true; p[0] += 4; } else if (s.startsWith("false", p[0])) { dir = false; p[0] += 5; } else throw bad(); }
++                else if (key.equals("bytes")) { int st = p[0]; while (p[0] < s.length() && Character.isDigit(s.charAt(p[0]))) p[0]++; if (st == p[0] || p[0] - st > 10) throw bad(); bytes = Long.parseLong(s.substring(st, p[0])); }
++                else throw bad();
++                ws(s, p); char c = peek(s, p); p[0]++;
++                if (c == '}') break; if (c != ',') throw bad();
++            }
++            if (path == null || dir == null || bytes == null) throw bad();
++            out.add(new Object[]{path, dir, bytes}); ws(s, p); char c = peek(s, p); p[0]++;
++            if (c == ']') break; if (c != ',') throw bad();
++        }
++        ws(s, p); if (p[0] != s.length()) throw bad(); return out;
++    }
++    private static String str(String s, int[] p) throws IOException {
++        expect(s, p, '"'); StringBuilder b = new StringBuilder();
++        while (true) {
++            char c = peek(s, p); p[0]++;
++            if (c == '"') return b.toString();
++            if (c != '\\') { b.append(c); continue; }
++            char e = peek(s, p); p[0]++;
++            if (e == '"' || e == '\\' || e == '/') b.append(e);
++            else if (e == 'u') { b.append((char) Integer.parseInt(s.substring(p[0], p[0] + 4), 16)); p[0] += 4; }
++            else throw bad();
++        }
++    }
++    private static void ws(String s, int[] p) { while (p[0] < s.length() && Character.isWhitespace(s.charAt(p[0]))) p[0]++; }
++    private static char peek(String s, int[] p) throws IOException { if (p[0] >= s.length()) throw bad(); return s.charAt(p[0]); }
++    private static void expect(String s, int[] p, char c) throws IOException { if (peek(s, p) != c) throw bad(); p[0]++; }
++    private static IOException bad() { return new IOException("Invalid save index"); }
++}
+diff -ruN a/native-android/app/src/main/res/values/ui_strings.xml b/native-android/app/src/main/res/values/ui_strings.xml
+--- a/native-android/app/src/main/res/values/ui_strings.xml	2026-11-24 09:45:05.595102039 +0000
++++ b/native-android/app/src/main/res/values/ui_strings.xml	2026-11-24 09:45:05.622531577 +0000
+@@ -117,4 +117,8 @@
+     <string name="ui_hardware_help">Keyboard: WASD, mouse look, left/right mouse fire/aim, R reload, Space jump, Ctrl crouch, Shift sprint, F use, Enter loadout, 1–5 equipment. Mouse wheel cycles equipment.\n\nF12 or gamepad Select switches between game controls and menus. In menus, the left stick or D-pad moves the cursor and A selects.\n\nGamepad: left stick moves, right stick looks, RT fires, LT aims, A jumps, B crouches, X reloads, Y opens loadout, L3 sprints, R3 uses. LB/RB cycles equipment. D-pad: up map, down prone, left/right lean. Start or Escape opens pause.\n\nUSB and Bluetooth devices use Android input support. Controls held when focus is lost or a device disconnects are released.</string>
+     <string name="ui_hardware_gameplay">Game controls enabled. Select / F12 returns to menus.</string>
+     <string name="ui_hardware_menus">Menu cursor enabled. Select / F12 returns to game controls.</string>
++    <string name="ui_import_mod">Import mod (ZIP)</string>
++    <string name="ui_importing_mod">Importing mod into the game save area…</string>
++    <string name="ui_mod_imported">Mod \"%1$s\" imported: %2$d files, %3$d KiB. Start the game and open the MODS menu.</string>
++    <string name="ui_mod_import_failed">Could not import mod: %1$s</string>
+ </resources>
+diff -ruN a/native-android/app/src/main/res/values-tr/ui_strings.xml b/native-android/app/src/main/res/values-tr/ui_strings.xml
+--- a/native-android/app/src/main/res/values-tr/ui_strings.xml	2026-11-24 09:45:05.600054920 +0000
++++ b/native-android/app/src/main/res/values-tr/ui_strings.xml	2026-11-24 09:45:05.622677842 +0000
+@@ -117,4 +117,8 @@
+     <string name="ui_hardware_help">Klavye: WASD hareket, fare kamera, sol/sağ fare ateş/nişan, R doldur, Boşluk zıpla, Ctrl eğil, Shift koş, F kullan, Enter teçhizat, 1–5 ekipman. Fare tekerleği ekipman değiştirir.\n\nF12 veya gamepad Select, oyun kontrolleri ile menüler arasında geçiş yapar. Menülerde sol çubuk veya yön tuşları imleci taşır, A seçer.\n\nGamepad: sol çubuk hareket, sağ çubuk kamera, RT ateş, LT nişan, A zıpla, B eğil, X doldur, Y teçhizat, L3 koş, R3 kullan. LB/RB ekipman değiştirir. Yön tuşları: yukarı harita, aşağı yat, sol/sağ yana eğil. Start veya Escape duraklatır.\n\nUSB ve Bluetooth cihazları Android giriş desteğini kullanır. Odak kaybında veya cihaz bağlantısı kesildiğinde basılı kontroller bırakılır.</string>
+     <string name="ui_hardware_gameplay">Oyun kontrolleri açık. Select / F12 ile menülere dönün.</string>
+     <string name="ui_hardware_menus">Menü imleci açık. Select / F12 ile oyun kontrollerine dönün.</string>
++    <string name="ui_import_mod">Mod içe aktar (ZIP)</string>
++    <string name="ui_importing_mod">Mod oyunun kayıt alanına aktarılıyor…</string>
++    <string name="ui_mod_imported">\"%1$s\" modu aktarıldı: %2$d dosya, %3$d KiB. Oyunu başlatıp MODS menüsünü açın.</string>
++    <string name="ui_mod_import_failed">Mod aktarılamadı: %1$s</string>
+ </resources>
+diff -ruN a/tools/verify_saves.py b/tools/verify_saves.py
+--- a/tools/verify_saves.py	1970-01-01 00:00:00.000000000 +0000
++++ b/tools/verify_saves.py	2026-11-24 09:45:05.604094799 +0000
+@@ -0,0 +1,47 @@
++#!/usr/bin/env python3
++"""Reference reader for RavenDroid's native-saves.bin (RAVSAVE1), mirroring SaveStore::load in
++native-runtime/src/saves.rs. Usage: verify_saves.py FILE [--list]   |   --make FILE  (fresh fixture)"""
++import hashlib, json, struct, sys
++MAX_FILE, MAX_TOTAL, MAX_NODES, MAX_INDEX = 8*1024*1024, 32*1024*1024, 1024, 1024*1024
++
++def valid(p):
++    return (p == "/idbfs" or p.startswith("/idbfs/")) and len(p) <= 4096 and "\\" not in p and "\0" not in p \
++        and all(x not in ("", ".", "..") for x in p[1:].split("/"))
++
++def load(path):
++    b = open(path, "rb").read(); n = len(b)
++    assert 44 <= n <= MAX_TOTAL + MAX_INDEX + 44, "size"
++    assert b[:8] == b"RAVSAVE1", "magic"
++    isz = struct.unpack("<I", b[8:12])[0]
++    assert isz <= MAX_INDEX and isz + 44 <= n, "index size"
++    meta = json.loads(b[12:12+isz]); assert 0 < len(meta) <= MAX_NODES, "nodes"
++    for m in meta: assert set(m) == {"path", "directory", "bytes"}, "unknown field"   # deny_unknown_fields
++    total = 0; pos = 12 + isz; entries = {}
++    for m in meta:
++        assert valid(m["path"]) and m["bytes"] <= MAX_FILE and (not m["directory"] or m["bytes"] == 0), "entry " + m["path"]
++        total += m["bytes"]; assert total <= MAX_TOTAL, "quota"
++    assert n == 12 + isz + total + 32, "payload length"
++    for m in meta:
++        assert m["path"] not in entries, "dup"
++        entries[m["path"]] = (m["directory"], b[pos:pos+m["bytes"]]); pos += m["bytes"]
++    assert hashlib.sha256(b[:-32]).digest() == b[-32:], "checksum"
++    assert entries.get("/idbfs", (False,))[0], "root"
++    for p in entries:
++        if p != "/idbfs": assert entries.get(p.rsplit("/", 1)[0], (False,))[0], "parent of " + p
++    return entries
++
++def make(path, entries):
++    """Writer using serde_json's compact style and the Rust sorted-path order."""
++    items = sorted(entries.items())
++    idx = json.dumps([{"path": p, "directory": d, "bytes": len(v)} for p, (d, v) in items], separators=(",", ":"), ensure_ascii=False).encode()
++    body = b"RAVSAVE1" + struct.pack("<I", len(idx)) + idx + b"".join(v for _, (_, v) in items)
++    open(path, "wb").write(body + hashlib.sha256(body).digest())
++
++if __name__ == "__main__":
++    if sys.argv[1] == "--make":
++        make(sys.argv[2], {"/idbfs": (True, b""), "/idbfs/profile": (True, b""), "/idbfs/profile/SaveData": (True, b""),
++                           "/idbfs/profile/SaveData/settings.dat": (False, b"keep-me")})
++        print("fixture written"); sys.exit()
++    e = load(sys.argv[1]); print("VALID:", len(e), "nodes,", sum(len(v) for _, v in e.values()), "bytes")
++    if "--list" in sys.argv:
++        for p, (d, v) in sorted(e.items()): print(("d " if d else "f ") + p + ("" if d else f" ({len(v)})"))
