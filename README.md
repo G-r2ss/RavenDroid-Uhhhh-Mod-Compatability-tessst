@@ -9,7 +9,7 @@
 
 Android 10+ · ARM64 · Wasmtime AOT · OpenGL ES 3 · Rust + Java
 
-[**Download the full APK**](../../releases/download/v0.22/ravendroid-v0.22-full.apk) · [Release notes](../../releases/tag/v0.22) · [Build guide](docs/BUILDING.md)
+
 
 </div>
 
